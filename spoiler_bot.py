@@ -12,6 +12,12 @@ Date: June 2025
 import os
 from flask import Flask
 
+from flask import Flask
+import threading
+from telegram.ext import ChatMemberHandler
+
+
+
 # Create a simple web server to keep Render happy
 app = Flask(__name__)
 
@@ -22,6 +28,7 @@ def home():
 @app.route('/health')
 def health():
     return "OK"
+
 
 
 import logging
@@ -66,6 +73,9 @@ class SpoilerBot:
         
         # Add handlers
         self.setup_handlers()
+			self.application.add_handler(CommandHandler("sync_admins", self.sync_admins_command))
+			self.application.add_handler(ChatMemberHandler(self.handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+
     
     def load_config(self):
         """Load configuration from JSON file"""
@@ -377,60 +387,97 @@ I'll replace it with:
         logger.info("Starting Spoiler Bot...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+async def sync_group_admins(self, chat_id):
+    """Automatically add Telegram group admins as bot admins"""
+    try:
+        # Get list of chat administrators
+        chat_admins = await self.application.bot.get_chat_administrators(chat_id)
+        
+        added_admins = []
+        for admin in chat_admins:
+            user_id = admin.user.id
+            # Skip the bot itself and anonymous admins
+            if not admin.user.is_bot and user_id not in self.admin_users:
+                self.admin_users.add(user_id)
+                added_admins.append(f"{admin.user.first_name} ({user_id})")
+        
+        if added_admins:
+            self.save_config()
+            logger.info(f"Auto-added {len(added_admins)} group admins as bot admins")
+            return added_admins
+        return []
+    except Exception as e:
+        logger.error(f"Error syncing group admins: {e}")
+        return []
+
+async def sync_admins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /sync_admins command"""
+    if not self.is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Only bot administrators can sync admins.")
+        return
+    
+    chat_id = update.effective_chat.id
+    added_admins = await self.sync_group_admins(chat_id)
+    
+    if added_admins:
+        admin_list = '\n'.join([f"• {admin}" for admin in added_admins])
+        message = f"✅ **Added group admins as bot admins:**\n\n{admin_list}"
+        await update.message.reply_text(message, parse_mode='Markdown')
+    else:
+        await update.message.reply_text("ℹ️ No new admins to add. All group admins are already bot admins.")
+
+async def handle_my_chat_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle when bot is added/removed from chats"""
+    if update.my_chat_member.new_chat_member.status == "administrator":
+        # Bot was made admin, sync group admins
+        chat_id = update.effective_chat.id
+        added_admins = await self.sync_group_admins(chat_id)
+        
+        if added_admins:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🤖 **Bot Setup Complete!**\n\nAuto-added {len(added_admins)} group admins as bot administrators.\n\nUse `/enable_chat` to activate spoiler detection!",
+                parse_mode='Markdown'
+            )
+
+
+
 def main():
     """Main function to run the bot"""
-    # Get bot token from environment variable or prompt user
+    # Get bot token from environment variable
     token = os.getenv('TELEGRAM_BOT_TOKEN')
     
     if not token:
-        print("Please set the TELEGRAM_BOT_TOKEN environment variable or enter it below:")
-        token = input("Bot Token: ").strip()
-    
-    if not token:
-        print("Error: Bot token is required!")
+        print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
         return
     
     # Create and run bot
     bot = SpoilerBot(token)
     
-    # Add the first admin (the person running the bot)
-    print("\nTo get started, you need to add yourself as an administrator.")
-    print("You can find your Telegram user ID by messaging @userinfobot")
-    
-    try:
-        admin_id = input("Enter your Telegram user ID: ").strip()
-        if admin_id.isdigit():
-            bot.admin_users.add(int(admin_id))
-            bot.save_config()
-            print(f"Added {admin_id} as administrator.")
-        else:
-            print("Invalid user ID. You can add administrators later using /add_admin command.")
-    except KeyboardInterrupt:
-        print("\nSetup cancelled.")
-        return
+    # Auto-add admin from environment variable (fallback)
+    admin_id = os.getenv('ADMIN_USER_ID')
+    if admin_id and admin_id.isdigit():
+        bot.admin_users.add(int(admin_id))
+        bot.save_config()
+        print(f"Added {admin_id} as administrator.")
+    else:
+        print("No ADMIN_USER_ID set. Group admins will be auto-detected.")
     
     print("\n🤖 Bot is starting...")
-    print("Add the bot to your group chat and use /enable_chat to activate spoiler detection.")
-    print("Use /help to see all available commands.")
-    print("Press Ctrl+C to stop the bot.\n")
+    print("Bot is now running in the cloud!")
+    print("Group admins will be automatically detected when bot is made admin.")
     
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped.")
-
-
     # Start web server in background for Render
-    import threading
     web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))))
     web_thread.daemon = True
     web_thread.start()
     
-    # Start the bot
     try:
         bot.run()
     except KeyboardInterrupt:
         print("\n👋 Bot stopped.")
+
+
 
 if __name__ == '__main__':
     main()
