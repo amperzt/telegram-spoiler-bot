@@ -73,8 +73,8 @@ class SpoilerBot:
         
         # Add handlers
         self.setup_handlers()
-			self.application.add_handler(CommandHandler("sync_admins", self.sync_admins_command))
-			self.application.add_handler(ChatMemberHandler(self.handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+		self.application.add_handler(CommandHandler("sync_admins", self.sync_admins_command))
+		self.application.add_handler(ChatMemberHandler(self.handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
 
     
     def load_config(self):
