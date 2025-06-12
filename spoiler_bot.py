@@ -9,6 +9,21 @@ Author: Manus AI Assistant
 Date: June 2025
 """
 
+import os
+from flask import Flask
+
+# Create a simple web server to keep Render happy
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Telegram Spoiler Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+
 import logging
 import re
 import asyncio
@@ -399,6 +414,19 @@ def main():
     print("Use /help to see all available commands.")
     print("Press Ctrl+C to stop the bot.\n")
     
+    try:
+        bot.run()
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped.")
+
+
+    # Start web server in background for Render
+    import threading
+    web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))))
+    web_thread.daemon = True
+    web_thread.start()
+    
+    # Start the bot
     try:
         bot.run()
     except KeyboardInterrupt:
