@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 Telegram Spoiler Bot
-
 A bot that automatically adds spoiler tags to messages containing specific keywords
-in Telegram group chats. Features per-chat keyword management and robust error handling.
+in Telegram group chats. Features per-chat keyword management.
 
 🎯 Per-chat keywords - Each group manages its own list
 🔧 Auto-admin sync - Group admins become bot admins automatically
@@ -11,13 +10,11 @@ in Telegram group chats. Features per-chat keyword management and robust error h
 🛡️ Robust error handling - Won't crash on network issues
 🔄 Keep-alive system - Prevents Render sleeping
 
-
 """
 
 
 import logging
 import re
-import asyncio
 import os
 import json
 import threading
@@ -557,37 +554,8 @@ I'll replace it with:
         logger.info("Starting Spoiler Bot...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-async def test_bot_connection(token: str):
-    """Test bot connection and check for conflicts"""
-    try:
-        print("🔍 Testing bot token and checking for conflicts...")
-        test_app = Application.builder().token(token).build()
-        
-        async with test_app:
-            await test_app.initialize()
-            bot_info = await test_app.bot.get_me()
-            print(f"✅ Bot connected successfully: @{bot_info.username}")
-            await test_app.shutdown()
-        
-        return True
-        
-    except Conflict as e:
-        print("🚨 ERROR: Another instance of this bot is already running!")
-        print("Please stop all other instances before starting this one.")
-        print("Check:")
-        print("- Local computer terminal")
-        print("- Other hosting services") 
-        print("- Multiple Render deployments")
-        return False
-        
-    except Exception as e:
-        print(f"❌ Bot connection test failed: {e}")
-        if "Unauthorized" in str(e):
-            print("🚨 Bot token is invalid or revoked!")
-        return False
-
 def main():
-    """Main function to run the bot - let Render handle restarts"""
+    """Main function to run the bot - simplified version"""
     try:
         # Get bot token from environment variable
         token = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -596,9 +564,7 @@ def main():
             print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
             return
         
-        # Test connection before starting
-        if not asyncio.run(test_bot_connection(token)):
-            return
+        print("🔍 Initializing bot...")
         
         # Create and run bot
         bot = SpoilerBot(token)
@@ -645,11 +611,11 @@ def main():
         print(f"❌ Bot error: {e}")
         if "Conflict" in str(e):
             print("🚨 Multiple bot instances detected!")
+            print("Please stop all other instances of this bot.")
         raise  # Let Render handle the restart
 
 if __name__ == '__main__':
     main()
-
 
 
 """
