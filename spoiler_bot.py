@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
 Telegram Spoiler Bot
-
 A bot that automatically adds spoiler tags to messages containing specific keywords
 in Telegram group chats. Features per-chat keyword management.
-
-Author: Manus AI Assistant
-Date: June 2025
 """
+
 
 import logging
 import re
@@ -587,3 +584,9 @@ def main():
 if __name__ == '__main__':
     main()
 
+
+
+"""
+Author: Manus AI Assistant
+Date: June 2025
+"""
