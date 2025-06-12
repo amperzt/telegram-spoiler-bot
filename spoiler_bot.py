@@ -424,7 +424,7 @@ I'll replace it with:
                     # If we can't delete the original message, send a warning
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
-                        text="⚠️ I need admin permissions to delete messages and apply spoiler tags automatically."
+                        text="⚠️ I need admin permissions to delete messages and apply spoiler tags automatically.",
                         message_thread_id=message.message_thread_id  # Also preserve topic for warnings
                     )
         
