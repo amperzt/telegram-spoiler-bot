@@ -3,7 +3,7 @@
 Telegram Spoiler Bot
 
 A bot that automatically adds spoiler tags to messages containing specific keywords
-in Telegram group chats.
+in Telegram group chats. Features per-chat keyword management.
 
 Author: Manus AI Assistant
 Date: June 2025
@@ -15,7 +15,9 @@ import asyncio
 import os
 import json
 import threading
-from typing import List, Set
+import time
+import requests
+from typing import List, Set, Dict
 from flask import Flask
 from telegram import Update, Message
 from telegram.ext import (
@@ -33,11 +35,15 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Telegram Spoiler Bot is running!"
+    return "Telegram Spoiler Bot is running!", 200
 
 @app.route('/health')
 def health():
-    return "OK"
+    return {"status": "healthy", "timestamp": time.time()}, 200
+
+@app.route('/ping')
+def ping():
+    return "pong", 200
 
 # Configure logging
 logging.basicConfig(
@@ -46,13 +52,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def keep_alive():
+    """Ping the service every 10 minutes to prevent sleeping"""
+    app_url = os.getenv('RENDER_EXTERNAL_URL')
+    if not app_url:
+        return
+    
+    while True:
+        try:
+            time.sleep(600)  # Wait 10 minutes
+            response = requests.get(f"{app_url}/health", timeout=30)
+            print(f"🏓 Keep-alive ping: {response.status_code}")
+        except Exception as e:
+            print(f"⚠️ Keep-alive failed: {e}")
+
 class SpoilerBot:
     """Main bot class for handling spoiler tag functionality"""
     
     def __init__(self, token: str, config_file: str = "spoiler_config.json"):
         self.token = token
         self.config_file = config_file
-        self.spoiler_keywords = set()
+        self.spoiler_keywords = {}  # Now a dict: {chat_id: set_of_keywords}
         self.case_sensitive = False
         self.admin_users = set()
         self.enabled_chats = set()
@@ -72,11 +92,26 @@ class SpoilerBot:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                    self.spoiler_keywords = set(config.get('spoiler_keywords', []))
+                    
+                    # Load per-chat keywords
+                    keywords_data = config.get('spoiler_keywords', {})
+                    if isinstance(keywords_data, list):
+                        # Migrate old global format to new per-chat format
+                        self.spoiler_keywords = {}
+                        logger.info("Migrated old global keywords format")
+                    else:
+                        # New format: {chat_id: [keywords]}
+                        self.spoiler_keywords = {
+                            int(chat_id): set(keywords) 
+                            for chat_id, keywords in keywords_data.items()
+                        }
+                    
                     self.case_sensitive = config.get('case_sensitive', False)
                     self.admin_users = set(config.get('admin_users', []))
                     self.enabled_chats = set(config.get('enabled_chats', []))
-                    logger.info(f"Loaded configuration: {len(self.spoiler_keywords)} keywords")
+                    
+                    total_keywords = sum(len(keywords) for keywords in self.spoiler_keywords.values())
+                    logger.info(f"Loaded configuration: {total_keywords} keywords across {len(self.spoiler_keywords)} chats")
             else:
                 # Create default config
                 self.save_config()
@@ -88,7 +123,10 @@ class SpoilerBot:
         """Save current configuration to JSON file"""
         try:
             config = {
-                'spoiler_keywords': list(self.spoiler_keywords),
+                'spoiler_keywords': {
+                    str(chat_id): list(keywords) 
+                    for chat_id, keywords in self.spoiler_keywords.items()
+                },
                 'case_sensitive': self.case_sensitive,
                 'admin_users': list(self.admin_users),
                 'enabled_chats': list(self.enabled_chats)
@@ -99,6 +137,32 @@ class SpoilerBot:
         except Exception as e:
             logger.error(f"Error saving config: {e}")
     
+    def get_chat_keywords(self, chat_id: int) -> set:
+        """Get keywords for a specific chat"""
+        return self.spoiler_keywords.get(chat_id, set())
+    
+    def add_chat_keyword(self, chat_id: int, keyword: str):
+        """Add a keyword to a specific chat"""
+        if chat_id not in self.spoiler_keywords:
+            self.spoiler_keywords[chat_id] = set()
+        
+        processed_keyword = keyword.lower() if not self.case_sensitive else keyword
+        self.spoiler_keywords[chat_id].add(processed_keyword)
+    
+    def remove_chat_keyword(self, chat_id: int, keyword: str) -> bool:
+        """Remove a keyword from a specific chat. Returns True if removed."""
+        if chat_id not in self.spoiler_keywords:
+            return False
+        
+        processed_keyword = keyword.lower() if not self.case_sensitive else keyword
+        if processed_keyword in self.spoiler_keywords[chat_id]:
+            self.spoiler_keywords[chat_id].remove(processed_keyword)
+            # Clean up empty sets
+            if not self.spoiler_keywords[chat_id]:
+                del self.spoiler_keywords[chat_id]
+            return True
+        return False
+    
     def setup_handlers(self):
         """Setup message and command handlers"""
         # Command handlers
@@ -107,6 +171,7 @@ class SpoilerBot:
         self.application.add_handler(CommandHandler("add_keyword", self.add_keyword_command))
         self.application.add_handler(CommandHandler("remove_keyword", self.remove_keyword_command))
         self.application.add_handler(CommandHandler("list_keywords", self.list_keywords_command))
+        self.application.add_handler(CommandHandler("list_all_keywords", self.list_all_keywords_command))
         self.application.add_handler(CommandHandler("enable_chat", self.enable_chat_command))
         self.application.add_handler(CommandHandler("disable_chat", self.disable_chat_command))
         self.application.add_handler(CommandHandler("toggle_case", self.toggle_case_command))
@@ -131,14 +196,15 @@ I automatically add spoiler tags to messages containing specific keywords.
 
 **Commands:**
 • `/help` - Show all commands
-• `/add_keyword <word>` - Add a spoiler keyword
-• `/remove_keyword <word>` - Remove a spoiler keyword
-• `/list_keywords` - Show all keywords
+• `/add_keyword <word>` - Add a spoiler keyword to this chat
+• `/remove_keyword <word>` - Remove a spoiler keyword from this chat
+• `/list_keywords` - Show keywords for this chat
 • `/enable_chat` - Enable bot in this chat
 • `/disable_chat` - Disable bot in this chat
 • `/sync_admins` - Sync group admins with bot admins
 
 **Note:** I need admin permissions to delete and send messages in group chats.
+Each chat has its own independent keyword list!
         """
         await update.message.reply_text(welcome_text, parse_mode='Markdown')
     
@@ -147,10 +213,10 @@ I automatically add spoiler tags to messages containing specific keywords.
         help_text = """
 🔧 **Spoiler Bot Commands**
 
-**Keyword Management:**
-• `/add_keyword <word>` - Add a keyword that triggers spoiler tags
-• `/remove_keyword <word>` - Remove a keyword
-• `/list_keywords` - Show all current keywords
+**Keyword Management (Per Chat):**
+• `/add_keyword <word>` - Add a keyword that triggers spoiler tags in this chat
+• `/remove_keyword <word>` - Remove a keyword from this chat
+• `/list_keywords` - Show all keywords for this chat
 • `/toggle_case` - Toggle case sensitivity
 
 **Chat Management:**
@@ -160,14 +226,16 @@ I automatically add spoiler tags to messages containing specific keywords.
 **Admin Commands:**
 • `/add_admin <user_id>` - Add a bot administrator
 • `/sync_admins` - Sync group admins with bot admins
+• `/list_all_keywords` - Show keywords for all chats (admin only)
 
 **How it works:**
-1. When someone sends a message containing a spoiler keyword
-2. I delete the original message
-3. I send a new message with spoiler tags: ||spoiler text||
+1. Each chat has its own keyword list
+2. When someone sends a message containing a spoiler keyword
+3. I delete the original message
+4. I send a new message with spoiler tags: ||spoiler text||
 
 **Example:**
-If "endgame" is a keyword and someone writes:
+If "endgame" is a keyword in this chat and someone writes:
 "I loved the endgame battle scene!"
 
 I'll replace it with:
@@ -190,10 +258,12 @@ I'll replace it with:
             return
         
         keyword = ' '.join(context.args).strip()
+        chat_id = update.effective_chat.id
+        
         if keyword:
-            self.spoiler_keywords.add(keyword.lower() if not self.case_sensitive else keyword)
+            self.add_chat_keyword(chat_id, keyword)
             self.save_config()
-            await update.message.reply_text(f"✅ Added keyword: `{keyword}`", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Added keyword `{keyword}` to this chat", parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ Keyword cannot be empty.")
     
@@ -208,25 +278,53 @@ I'll replace it with:
             return
         
         keyword = ' '.join(context.args).strip()
-        keyword_to_remove = keyword.lower() if not self.case_sensitive else keyword
+        chat_id = update.effective_chat.id
         
-        if keyword_to_remove in self.spoiler_keywords:
-            self.spoiler_keywords.remove(keyword_to_remove)
+        if self.remove_chat_keyword(chat_id, keyword):
             self.save_config()
-            await update.message.reply_text(f"✅ Removed keyword: `{keyword}`", parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Removed keyword `{keyword}` from this chat", parse_mode='Markdown')
         else:
-            await update.message.reply_text(f"❌ Keyword `{keyword}` not found.", parse_mode='Markdown')
+            await update.message.reply_text(f"❌ Keyword `{keyword}` not found in this chat.", parse_mode='Markdown')
     
     async def list_keywords_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /list_keywords command"""
-        if not self.spoiler_keywords:
-            await update.message.reply_text("📝 No spoiler keywords configured.")
+        chat_id = update.effective_chat.id
+        chat_keywords = self.get_chat_keywords(chat_id)
+        
+        if not chat_keywords:
+            await update.message.reply_text("📝 No spoiler keywords configured for this chat.")
             return
         
-        keywords_list = '\n'.join([f"• `{keyword}`" for keyword in sorted(self.spoiler_keywords)])
+        keywords_list = '\n'.join([f"• `{keyword}`" for keyword in sorted(chat_keywords)])
         case_info = "Case sensitive" if self.case_sensitive else "Case insensitive"
+        chat_name = update.effective_chat.title or "this chat"
         
-        message = f"📝 **Spoiler Keywords** ({case_info}):\n\n{keywords_list}"
+        message = f"📝 **Spoiler Keywords for {chat_name}** ({case_info}):\n\n{keywords_list}"
+        await update.message.reply_text(message, parse_mode='Markdown')
+    
+    async def list_all_keywords_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /list_all_keywords command - shows keywords for all chats"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Only bot administrators can view global keywords.")
+            return
+        
+        if not self.spoiler_keywords:
+            await update.message.reply_text("📝 No spoiler keywords configured in any chat.")
+            return
+        
+        message_parts = ["📝 **All Spoiler Keywords by Chat:**\n"]
+        
+        for chat_id, keywords in self.spoiler_keywords.items():
+            try:
+                chat = await context.bot.get_chat(chat_id)
+                chat_name = chat.title or f"Chat {chat_id}"
+            except:
+                chat_name = f"Chat {chat_id}"
+            
+            keywords_list = ', '.join([f"`{keyword}`" for keyword in sorted(keywords)])
+            message_parts.append(f"**{chat_name}:** {keywords_list}")
+        
+        message = '\n\n'.join(message_parts)
         await update.message.reply_text(message, parse_mode='Markdown')
     
     async def enable_chat_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,11 +359,12 @@ I'll replace it with:
         
         # Update existing keywords to match new case sensitivity
         if not self.case_sensitive:
-            self.spoiler_keywords = {keyword.lower() for keyword in self.spoiler_keywords}
+            for chat_id in self.spoiler_keywords:
+                self.spoiler_keywords[chat_id] = {keyword.lower() for keyword in self.spoiler_keywords[chat_id]}
         
         self.save_config()
         status = "enabled" if self.case_sensitive else "disabled"
-        await update.message.reply_text(f"✅ Case sensitivity {status}.")
+        await update.message.reply_text(f"✅ Case sensitivity {status} globally.")
     
     async def add_admin_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /add_admin command"""
@@ -334,19 +433,21 @@ I'll replace it with:
             if added_admins:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"🤖 **Bot Setup Complete!**\n\nAuto-added {len(added_admins)} group admins as bot administrators.\n\nUse `/enable_chat` to activate spoiler detection!",
+                    text=f"🤖 **Bot Setup Complete!**\n\nAuto-added {len(added_admins)} group admins as bot administrators.\n\nUse `/enable_chat` to activate spoiler detection!\n\nEach chat has its own keyword list. Use `/add_keyword` to start adding spoiler words for this chat.",
                     parse_mode='Markdown'
                 )
     
-    def contains_spoiler_keywords(self, text: str) -> List[str]:
-        """Check if text contains any spoiler keywords and return found keywords"""
-        if not self.spoiler_keywords:
+    def contains_spoiler_keywords(self, text: str, chat_id: int) -> List[str]:
+        """Check if text contains any spoiler keywords for this chat and return found keywords"""
+        chat_keywords = self.get_chat_keywords(chat_id)
+        
+        if not chat_keywords:
             return []
         
         found_keywords = []
         search_text = text if self.case_sensitive else text.lower()
         
-        for keyword in self.spoiler_keywords:
+        for keyword in chat_keywords:
             # Use word boundaries to match whole words only
             pattern = r'\b' + re.escape(keyword) + r'\b'
             if re.search(pattern, search_text, re.IGNORECASE if not self.case_sensitive else 0):
@@ -380,19 +481,15 @@ I'll replace it with:
             if update.effective_chat.id not in self.enabled_chats:
                 return
             
-            # Skip if no keywords configured
-            if not self.spoiler_keywords:
-                return
-            
             message = update.message
             if not message or not message.text:
                 return
             
-            # Check for spoiler keywords
-            found_keywords = self.contains_spoiler_keywords(message.text)
+            # Check for spoiler keywords in this specific chat
+            found_keywords = self.contains_spoiler_keywords(message.text, update.effective_chat.id)
             
             if found_keywords:
-                logger.info(f"Found spoiler keywords {found_keywords} in message from {message.from_user.username}")
+                logger.info(f"Found spoiler keywords {found_keywords} in message from {message.from_user.username} in chat {update.effective_chat.id}")
                 
                 # Apply spoiler tags
                 spoiler_text = self.apply_spoiler_tags(message.text, found_keywords)
@@ -412,10 +509,9 @@ I'll replace it with:
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
                         text=new_message,
-                        message_thread_id=message.message_thread_id,  # This preserves the topic!
+                        message_thread_id=message.message_thread_id,  # Preserve topic
                         parse_mode='MarkdownV2' if '||' in spoiler_text else None
                     )
-
                     
                     logger.info(f"Successfully applied spoiler tags for keywords: {found_keywords}")
                     
@@ -437,39 +533,56 @@ I'll replace it with:
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 def main():
-    """Main function to run the bot"""
-    # Get bot token from environment variable
-    token = os.getenv('TELEGRAM_BOT_TOKEN')
-    
-    if not token:
-        print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
-        return
-    
-    # Create and run bot
-    bot = SpoilerBot(token)
-    
-    # Auto-add admin from environment variable (fallback)
-    admin_id = os.getenv('ADMIN_USER_ID')
-    if admin_id and admin_id.isdigit():
-        bot.admin_users.add(int(admin_id))
-        bot.save_config()
-        print(f"Added {admin_id} as administrator.")
-    else:
-        print("No ADMIN_USER_ID set. Group admins will be auto-detected.")
-    
-    print("\n🤖 Bot is starting...")
-    print("Bot is now running in the cloud!")
-    print("Group admins will be automatically detected when bot is made admin.")
-    
-    # Start web server in background for Render
-    web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))))
-    web_thread.daemon = True
-    web_thread.start()
-    
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n👋 Bot stopped.")
+    """Main function to run the bot with auto-restart"""
+    while True:
+        try:
+            # Get bot token from environment variable
+            token = os.getenv('TELEGRAM_BOT_TOKEN')
+            
+            if not token:
+                print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
+                return
+            
+            # Create and run bot
+            bot = SpoilerBot(token)
+            
+            # Auto-add admin from environment variable (fallback)
+            admin_id = os.getenv('ADMIN_USER_ID')
+            if admin_id and admin_id.isdigit():
+                bot.admin_users.add(int(admin_id))
+                bot.save_config()
+                print(f"Added {admin_id} as administrator.")
+            else:
+                print("No ADMIN_USER_ID set. Group admins will be auto-detected.")
+            
+            print("\n🤖 Bot is starting...")
+            print("Bot is now running in the cloud!")
+            print("Each chat will have its own independent keyword list.")
+            print("Group admins will be automatically detected when bot is made admin.")
+            
+            # Start web server in background for Render
+            web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))))
+            web_thread.daemon = True
+            web_thread.start()
+            
+            # Start keep-alive service if on Render
+            if os.getenv('RENDER_EXTERNAL_URL'):
+                keep_alive_thread = threading.Thread(target=keep_alive)
+                keep_alive_thread.daemon = True
+                keep_alive_thread.start()
+                print("🔄 Keep-alive service started")
+            
+            # Run the bot
+            bot.run()
+            
+        except KeyboardInterrupt:
+            print("\n👋 Bot stopped by user.")
+            break
+        except Exception as e:
+            print(f"❌ Bot crashed with error: {e}")
+            print("🔄 Restarting in 10 seconds...")
+            time.sleep(10)  # Wait before restarting
+            continue
 
 if __name__ == '__main__':
     main()
