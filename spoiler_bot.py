@@ -408,12 +408,14 @@ I'll replace it with:
                     # Delete original message
                     await message.delete()
                     
-                    # Send new message with spoiler tags
+                    # Send new message with spoiler tags (preserve topic)
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
                         text=new_message,
+                        message_thread_id=message.message_thread_id,  # This preserves the topic!
                         parse_mode='MarkdownV2' if '||' in spoiler_text else None
                     )
+
                     
                     logger.info(f"Successfully applied spoiler tags for keywords: {found_keywords}")
                     
@@ -423,6 +425,7 @@ I'll replace it with:
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id,
                         text="⚠️ I need admin permissions to delete messages and apply spoiler tags automatically."
+                        message_thread_id=message.message_thread_id  # Also preserve topic for warnings
                     )
         
         except Exception as e:
