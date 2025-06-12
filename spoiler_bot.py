@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
 Telegram Spoiler Bot
+
 A bot that automatically adds spoiler tags to messages containing specific keywords
-in Telegram group chats. Features per-chat keyword management.
+in Telegram group chats. Features per-chat keyword management and robust error handling.
+
+🎯 Per-chat keywords - Each group manages its own list
+🔧 Auto-admin sync - Group admins become bot admins automatically
+📍 Topic preservation - Works perfectly with forum groups
+🛡️ Robust error handling - Won't crash on network issues
+🔄 Keep-alive system - Prevents Render sleeping
+
+
 """
 
 
@@ -25,7 +34,7 @@ from telegram.ext import (
     CommandHandler,
     ChatMemberHandler
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, Conflict
 
 # Create a simple web server to keep Render happy
 app = Flask(__name__)
@@ -69,7 +78,7 @@ class SpoilerBot:
     def __init__(self, token: str, config_file: str = "spoiler_config.json"):
         self.token = token
         self.config_file = config_file
-        self.spoiler_keywords = {}  # Now a dict: {chat_id: set_of_keywords}
+        self.spoiler_keywords = {}  # Dict: {chat_id: set_of_keywords}
         self.case_sensitive = False
         self.admin_users = set()
         self.enabled_chats = set()
@@ -77,11 +86,30 @@ class SpoilerBot:
         # Load configuration
         self.load_config()
         
-        # Initialize application
+        # Initialize application with error handling
         self.application = Application.builder().token(token).build()
+        
+        # Add error handler
+        self.application.add_error_handler(self.error_handler)
         
         # Add handlers
         self.setup_handlers()
+    
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle errors in the bot"""
+        error_msg = str(context.error)
+        logger.error(f"Exception while handling an update: {error_msg}")
+        
+        # Handle specific Telegram errors
+        if "Conflict" in error_msg:
+            logger.error("🚨 CONFLICT: Another bot instance is running with the same token!")
+            logger.error("Please stop all other instances of this bot.")
+        elif "Unauthorized" in error_msg:
+            logger.error("🚨 UNAUTHORIZED: Bot token is invalid or revoked!")
+        elif "Network" in error_msg:
+            logger.error("🌐 NETWORK: Connection issue with Telegram servers")
+        
+        return
     
     def load_config(self):
         """Load configuration from JSON file"""
@@ -529,57 +557,95 @@ I'll replace it with:
         logger.info("Starting Spoiler Bot...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
+async def test_bot_connection(token: str):
+    """Test bot connection and check for conflicts"""
+    try:
+        print("🔍 Testing bot token and checking for conflicts...")
+        test_app = Application.builder().token(token).build()
+        
+        async with test_app:
+            await test_app.initialize()
+            bot_info = await test_app.bot.get_me()
+            print(f"✅ Bot connected successfully: @{bot_info.username}")
+            await test_app.shutdown()
+        
+        return True
+        
+    except Conflict as e:
+        print("🚨 ERROR: Another instance of this bot is already running!")
+        print("Please stop all other instances before starting this one.")
+        print("Check:")
+        print("- Local computer terminal")
+        print("- Other hosting services") 
+        print("- Multiple Render deployments")
+        return False
+        
+    except Exception as e:
+        print(f"❌ Bot connection test failed: {e}")
+        if "Unauthorized" in str(e):
+            print("🚨 Bot token is invalid or revoked!")
+        return False
+
 def main():
-    """Main function to run the bot with auto-restart"""
-    while True:
-        try:
-            # Get bot token from environment variable
-            token = os.getenv('TELEGRAM_BOT_TOKEN')
-            
-            if not token:
-                print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
-                return
-            
-            # Create and run bot
-            bot = SpoilerBot(token)
-            
-            # Auto-add admin from environment variable (fallback)
-            admin_id = os.getenv('ADMIN_USER_ID')
-            if admin_id and admin_id.isdigit():
-                bot.admin_users.add(int(admin_id))
-                bot.save_config()
-                print(f"Added {admin_id} as administrator.")
-            else:
-                print("No ADMIN_USER_ID set. Group admins will be auto-detected.")
-            
-            print("\n🤖 Bot is starting...")
-            print("Bot is now running in the cloud!")
-            print("Each chat will have its own independent keyword list.")
-            print("Group admins will be automatically detected when bot is made admin.")
-            
-            # Start web server in background for Render
-            web_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000))))
-            web_thread.daemon = True
-            web_thread.start()
-            
-            # Start keep-alive service if on Render
-            if os.getenv('RENDER_EXTERNAL_URL'):
-                keep_alive_thread = threading.Thread(target=keep_alive)
-                keep_alive_thread.daemon = True
-                keep_alive_thread.start()
-                print("🔄 Keep-alive service started")
-            
-            # Run the bot
-            bot.run()
-            
-        except KeyboardInterrupt:
-            print("\n👋 Bot stopped by user.")
-            break
-        except Exception as e:
-            print(f"❌ Bot crashed with error: {e}")
-            print("🔄 Restarting in 10 seconds...")
-            time.sleep(10)  # Wait before restarting
-            continue
+    """Main function to run the bot - let Render handle restarts"""
+    try:
+        # Get bot token from environment variable
+        token = os.getenv('TELEGRAM_BOT_TOKEN')
+        
+        if not token:
+            print("Error: TELEGRAM_BOT_TOKEN environment variable not set!")
+            return
+        
+        # Test connection before starting
+        if not asyncio.run(test_bot_connection(token)):
+            return
+        
+        # Create and run bot
+        bot = SpoilerBot(token)
+        
+        # Auto-add admin from environment variable (fallback)
+        admin_id = os.getenv('ADMIN_USER_ID')
+        if admin_id and admin_id.isdigit():
+            bot.admin_users.add(int(admin_id))
+            bot.save_config()
+            print(f"Added {admin_id} as administrator.")
+        else:
+            print("No ADMIN_USER_ID set. Group admins will be auto-detected.")
+        
+        print("\n🤖 Bot is starting...")
+        print("Bot is now running in the cloud!")
+        print("Each chat will have its own independent keyword list.")
+        print("Group admins will be automatically detected when bot is made admin.")
+        
+        # Start web server for Render
+        port = int(os.environ.get('PORT', 5000))
+        web_thread = threading.Thread(
+            target=lambda: app.run(
+                host='0.0.0.0', 
+                port=port, 
+                debug=False,
+                use_reloader=False
+            )
+        )
+        web_thread.daemon = True
+        web_thread.start()
+        print(f"🌐 Web server started on port {port}")
+        
+        # Start keep-alive if on Render
+        if os.getenv('RENDER_EXTERNAL_URL'):
+            keep_alive_thread = threading.Thread(target=keep_alive)
+            keep_alive_thread.daemon = True
+            keep_alive_thread.start()
+            print("🔄 Keep-alive service started")
+        
+        # Run the bot
+        bot.run()
+        
+    except Exception as e:
+        print(f"❌ Bot error: {e}")
+        if "Conflict" in str(e):
+            print("🚨 Multiple bot instances detected!")
+        raise  # Let Render handle the restart
 
 if __name__ == '__main__':
     main()
