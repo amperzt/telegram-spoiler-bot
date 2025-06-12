@@ -9,14 +9,24 @@ Author: Manus AI Assistant
 Date: June 2025
 """
 
+import logging
+import re
+import asyncio
 import os
-from flask import Flask
-
-from flask import Flask
+import json
 import threading
-from telegram.ext import ChatMemberHandler
-
-
+from typing import List, Set
+from flask import Flask
+from telegram import Update, Message
+from telegram.ext import (
+    Application, 
+    MessageHandler, 
+    filters, 
+    ContextTypes,
+    CommandHandler,
+    ChatMemberHandler
+)
+from telegram.error import TelegramError
 
 # Create a simple web server to keep Render happy
 app = Flask(__name__)
@@ -28,24 +38,6 @@ def home():
 @app.route('/health')
 def health():
     return "OK"
-
-
-
-import logging
-import re
-import asyncio
-from typing import List, Set
-from telegram import Update, Message
-from telegram.ext import (
-    Application, 
-    MessageHandler, 
-    filters, 
-    ContextTypes,
-    CommandHandler
-)
-from telegram.error import TelegramError
-import json
-import os
 
 # Configure logging
 logging.basicConfig(
@@ -73,9 +65,6 @@ class SpoilerBot:
         
         # Add handlers
         self.setup_handlers()
-		self.application.add_handler(CommandHandler("sync_admins", self.sync_admins_command))
-		self.application.add_handler(ChatMemberHandler(self.handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
-
     
     def load_config(self):
         """Load configuration from JSON file"""
@@ -122,6 +111,8 @@ class SpoilerBot:
         self.application.add_handler(CommandHandler("disable_chat", self.disable_chat_command))
         self.application.add_handler(CommandHandler("toggle_case", self.toggle_case_command))
         self.application.add_handler(CommandHandler("add_admin", self.add_admin_command))
+        self.application.add_handler(CommandHandler("sync_admins", self.sync_admins_command))
+        self.application.add_handler(ChatMemberHandler(self.handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
         
         # Message handler for spoiler detection
         self.application.add_handler(
@@ -145,6 +136,7 @@ I automatically add spoiler tags to messages containing specific keywords.
 • `/list_keywords` - Show all keywords
 • `/enable_chat` - Enable bot in this chat
 • `/disable_chat` - Disable bot in this chat
+• `/sync_admins` - Sync group admins with bot admins
 
 **Note:** I need admin permissions to delete and send messages in group chats.
         """
@@ -167,6 +159,7 @@ I automatically add spoiler tags to messages containing specific keywords.
 
 **Admin Commands:**
 • `/add_admin <user_id>` - Add a bot administrator
+• `/sync_admins` - Sync group admins with bot admins
 
 **How it works:**
 1. When someone sends a message containing a spoiler keyword
@@ -292,6 +285,59 @@ I'll replace it with:
         except ValueError:
             await update.message.reply_text("❌ Invalid user ID. Please provide a numeric user ID.")
     
+    async def sync_group_admins(self, chat_id):
+        """Automatically add Telegram group admins as bot admins"""
+        try:
+            # Get list of chat administrators
+            chat_admins = await self.application.bot.get_chat_administrators(chat_id)
+            
+            added_admins = []
+            for admin in chat_admins:
+                user_id = admin.user.id
+                # Skip the bot itself and anonymous admins
+                if not admin.user.is_bot and user_id not in self.admin_users:
+                    self.admin_users.add(user_id)
+                    added_admins.append(f"{admin.user.first_name} ({user_id})")
+            
+            if added_admins:
+                self.save_config()
+                logger.info(f"Auto-added {len(added_admins)} group admins as bot admins")
+                return added_admins
+            return []
+        except Exception as e:
+            logger.error(f"Error syncing group admins: {e}")
+            return []
+    
+    async def sync_admins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /sync_admins command"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Only bot administrators can sync admins.")
+            return
+        
+        chat_id = update.effective_chat.id
+        added_admins = await self.sync_group_admins(chat_id)
+        
+        if added_admins:
+            admin_list = '\n'.join([f"• {admin}" for admin in added_admins])
+            message = f"✅ **Added group admins as bot admins:**\n\n{admin_list}"
+            await update.message.reply_text(message, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("ℹ️ No new admins to add. All group admins are already bot admins.")
+    
+    async def handle_my_chat_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle when bot is added/removed from chats"""
+        if update.my_chat_member.new_chat_member.status == "administrator":
+            # Bot was made admin, sync group admins
+            chat_id = update.effective_chat.id
+            added_admins = await self.sync_group_admins(chat_id)
+            
+            if added_admins:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🤖 **Bot Setup Complete!**\n\nAuto-added {len(added_admins)} group admins as bot administrators.\n\nUse `/enable_chat` to activate spoiler detection!",
+                    parse_mode='Markdown'
+                )
+    
     def contains_spoiler_keywords(self, text: str) -> List[str]:
         """Check if text contains any spoiler keywords and return found keywords"""
         if not self.spoiler_keywords:
@@ -387,61 +433,6 @@ I'll replace it with:
         logger.info("Starting Spoiler Bot...")
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-async def sync_group_admins(self, chat_id):
-    """Automatically add Telegram group admins as bot admins"""
-    try:
-        # Get list of chat administrators
-        chat_admins = await self.application.bot.get_chat_administrators(chat_id)
-        
-        added_admins = []
-        for admin in chat_admins:
-            user_id = admin.user.id
-            # Skip the bot itself and anonymous admins
-            if not admin.user.is_bot and user_id not in self.admin_users:
-                self.admin_users.add(user_id)
-                added_admins.append(f"{admin.user.first_name} ({user_id})")
-        
-        if added_admins:
-            self.save_config()
-            logger.info(f"Auto-added {len(added_admins)} group admins as bot admins")
-            return added_admins
-        return []
-    except Exception as e:
-        logger.error(f"Error syncing group admins: {e}")
-        return []
-
-async def sync_admins_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /sync_admins command"""
-    if not self.is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Only bot administrators can sync admins.")
-        return
-    
-    chat_id = update.effective_chat.id
-    added_admins = await self.sync_group_admins(chat_id)
-    
-    if added_admins:
-        admin_list = '\n'.join([f"• {admin}" for admin in added_admins])
-        message = f"✅ **Added group admins as bot admins:**\n\n{admin_list}"
-        await update.message.reply_text(message, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("ℹ️ No new admins to add. All group admins are already bot admins.")
-
-async def handle_my_chat_member(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle when bot is added/removed from chats"""
-    if update.my_chat_member.new_chat_member.status == "administrator":
-        # Bot was made admin, sync group admins
-        chat_id = update.effective_chat.id
-        added_admins = await self.sync_group_admins(chat_id)
-        
-        if added_admins:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"🤖 **Bot Setup Complete!**\n\nAuto-added {len(added_admins)} group admins as bot administrators.\n\nUse `/enable_chat` to activate spoiler detection!",
-                parse_mode='Markdown'
-            )
-
-
-
 def main():
     """Main function to run the bot"""
     # Get bot token from environment variable
@@ -476,8 +467,6 @@ def main():
         bot.run()
     except KeyboardInterrupt:
         print("\n👋 Bot stopped.")
-
-
 
 if __name__ == '__main__':
     main()
